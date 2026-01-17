@@ -1,0 +1,7 @@
+pyobjc-framework-EventKit
+pyobjc-framework-Cocoa
+PySide6
+colorama
+setproctitle
+pytest
+ruff

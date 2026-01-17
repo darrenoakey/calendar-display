@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+# run facade for calendar-display
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+TEST_OUT = Path("output/testing")
+SRC_DIR = Path(__file__).parent / "src"
+
+
+# ##################################################################
+# run command
+# executes a shell command and returns the exit code
+def run_command(cmd: list[str]) -> int:
+    return subprocess.call(cmd)
+
+
+# ##################################################################
+# command start
+# launches the calendar display application
+def command_start(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(SRC_DIR))
+    from horizontal_calendar import run_application
+    return run_application(days=args.days)
+
+
+# ##################################################################
+# command test
+# runs a single test target and logs output
+def command_test(args: argparse.Namespace) -> int:
+    TEST_OUT.mkdir(parents=True, exist_ok=True)
+    target = args.target
+    log = TEST_OUT / (target.replace("/", "_").replace("::", "_") + ".log")
+    result = run_command(["pytest", "-q", target, "--maxfail=1", "--disable-warnings"])
+    print(f"Test output written to {log}")
+    return result
+
+
+# ##################################################################
+# command lint
+# runs the ruff linter on source files
+def command_lint(args: argparse.Namespace) -> int:  # noqa: ARG001
+    return run_command(["ruff", "check", "--line-length", "120", "src/"])
+
+
+# ##################################################################
+# command check
+# runs the full test suite and quality gates
+def command_check(args: argparse.Namespace) -> int:  # noqa: ARG001
+    lint_result = run_command(["ruff", "check", "--line-length", "120", "src/"])
+    if lint_result != 0:
+        return lint_result
+    TEST_OUT.mkdir(parents=True, exist_ok=True)
+    test_result = run_command(["pytest", "-q", "src/", "--disable-warnings"])
+    return test_result
+
+
+# ##################################################################
+# main
+# parses arguments and dispatches to the appropriate command
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Calendar Display")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_start = sub.add_parser("start", help="Launch the calendar display")
+    p_start.add_argument("--days", type=int, default=2, help="Number of days to display (default: 2)")
+    p_start.set_defaults(func=command_start)
+
+    p_test = sub.add_parser("test", help="Run a single test target")
+    p_test.add_argument("target", help="e.g. src/calendar_access_test.py::test_event_dataclass")
+    p_test.set_defaults(func=command_test)
+
+    p_lint = sub.add_parser("lint", help="Run linter")
+    p_lint.set_defaults(func=command_lint)
+
+    p_check = sub.add_parser("check", help="Run full suite and gates")
+    p_check.set_defaults(func=command_check)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+# ##################################################################
+# entry point
+# standard python pattern for dispatching main
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
