@@ -6,6 +6,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 
+import math
+
 from PySide6.QtCore import Qt, QTimer, QRectF, QSettings
 from PySide6.QtGui import QPainter, QColor, QFont, QBrush, QLinearGradient, QFontMetrics, QIcon
 from PySide6.QtWidgets import (
@@ -118,6 +120,32 @@ def wrap_text(text: str, font: QFont, max_width: int, max_lines: int = 2) -> lis
 
 
 # ##################################################################
+# is urgent
+# returns true if event starts within 5 minutes or is currently happening
+def is_urgent(event: CalendarEvent, now: Optional[datetime] = None) -> bool:
+    if now is None:
+        now = datetime.now()
+    five_min_from_now = now + timedelta(minutes=5)
+    starts_soon = event.start_time <= five_min_from_now and event.start_time > now
+    is_active = event.start_time <= now <= event.end_time
+    return starts_soon or is_active
+
+
+# ##################################################################
+# has ended
+# returns true if the event's end time is in the past
+def has_ended(event: CalendarEvent, now: Optional[datetime] = None) -> bool:
+    if now is None:
+        now = datetime.now()
+    return now > event.end_time
+
+
+# flash animation timing
+FLASH_INTERVAL_MS = 50  # update every 50ms for smooth animation
+FLASH_CYCLE_MS = 2000   # complete flash cycle every 2 seconds
+
+
+# ##################################################################
 # event card widget
 # displays a single event as a material design card with elevation
 class EventCard(QFrame):
@@ -126,6 +154,7 @@ class EventCard(QFrame):
         super().__init__(parent)
         self.calendar_event = calendar_event
         self.color = color
+        self.flash_phase = 0.0  # 0.0 to 1.0 representing position in flash cycle
         self.setFixedHeight(160)
         self.setMinimumWidth(200)
         shadow = QGraphicsDropShadowEffect(self)
@@ -134,6 +163,23 @@ class EventCard(QFrame):
         shadow.setYOffset(4)
         shadow.setColor(QColor(0, 0, 0, 50))
         self.setGraphicsEffect(shadow)
+        # flash animation timer
+        self.flash_timer = QTimer(self)
+        self.flash_timer.timeout.connect(self.update_flash)
+        self.flash_timer.start(FLASH_INTERVAL_MS)
+
+    # ##################################################################
+    # update flash
+    # advances the flash animation phase if event is urgent
+    def update_flash(self) -> None:
+        if is_urgent(self.calendar_event):
+            self.flash_phase += FLASH_INTERVAL_MS / FLASH_CYCLE_MS
+            if self.flash_phase >= 1.0:
+                self.flash_phase = 0.0
+            self.update()
+        elif self.flash_phase != 0.0:
+            self.flash_phase = 0.0
+            self.update()
 
     # ##################################################################
     # paint event
@@ -152,11 +198,21 @@ class EventCard(QFrame):
     # ##################################################################
     # draw card background
     # renders the card with a subtle gradient and rounded corners
+    # applies flash effect when event is urgent using hue shift
     def draw_card_background(self, painter: QPainter, rect: QRectF) -> None:
+        # calculate flash hue shift: cycle through entire spectrum
+        if self.flash_phase > 0:
+            # phase goes 0 to 1, shift hue through full 360 degrees
+            hue_shift = int(self.flash_phase * 360)
+            h, s, l, a = self.color.getHsl()
+            new_hue = (h + hue_shift) % 360
+            base_color = QColor.fromHsl(new_hue, s, l, a)
+        else:
+            base_color = self.color
         gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        gradient.setColorAt(0, self.color.lighter(105))
-        gradient.setColorAt(0.5, self.color)
-        gradient.setColorAt(1, self.color.darker(105))
+        gradient.setColorAt(0, base_color.lighter(105))
+        gradient.setColorAt(0.5, base_color)
+        gradient.setColorAt(1, base_color.darker(105))
         painter.setBrush(QBrush(gradient))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 12, 12)
@@ -550,10 +606,13 @@ class MainWindow(QMainWindow):
     def refresh_events(self) -> None:
         from calendar_access import get_events_for_days
         self.all_events = get_events_for_days(2)
-        today = datetime.now().date()
+        now = datetime.now()
+        today = now.date()
         tomorrow = today + timedelta(days=1)
-        today_events = [e for e in self.all_events if e.start_time.date() == today]
-        tomorrow_events = [e for e in self.all_events if e.start_time.date() == tomorrow]
+        # filter out events that have already ended
+        active_events = [e for e in self.all_events if not has_ended(e, now)]
+        today_events = [e for e in active_events if e.start_time.date() == today]
+        tomorrow_events = [e for e in active_events if e.start_time.date() == tomorrow]
         self.today_column.set_events(today_events)
         self.tomorrow_column.set_events(tomorrow_events)
         self.update_countdown()
@@ -566,7 +625,17 @@ def run_application(days: int = 2) -> int:
     import sys
     import setproctitle
     setproctitle.setproctitle("calendar-display")
+    # set macos dock/menu name via pyobjc
+    try:
+        from Foundation import NSBundle
+        bundle = NSBundle.mainBundle()
+        info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+        info["CFBundleName"] = "Calendar Display"
+    except ImportError:
+        pass  # pyobjc not available
     app = QApplication(sys.argv)
+    app.setApplicationName("Calendar Display")
+    app.setApplicationDisplayName("Calendar Display")
     app.setStyle("Fusion")
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))

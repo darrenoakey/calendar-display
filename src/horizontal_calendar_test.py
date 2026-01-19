@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 from horizontal_calendar import (
     DisplayConfig, DayColumn, EventCard, NextEventColumn, COLORS,
-    format_duration, format_countdown, wrap_text
+    format_duration, format_countdown, wrap_text, is_urgent, has_ended
 )
 from calendar_access import CalendarEvent
 
@@ -258,3 +258,196 @@ def test_color_map_assignment() -> None:
     column.set_events(events)
     assert "Work" in column.calendar_color_map
     assert "Personal" in column.calendar_color_map
+
+
+# ##################################################################
+# test is urgent for event starting soon
+# verifies event within 5 minutes is marked urgent
+def test_is_urgent_starting_soon() -> None:
+    now = datetime(2024, 1, 15, 10, 0, 0)
+    event = CalendarEvent(
+        title="Soon Event",
+        start_time=datetime(2024, 1, 15, 10, 3, 0),  # 3 minutes from now
+        end_time=datetime(2024, 1, 15, 11, 0, 0),
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="s1",
+    )
+    assert is_urgent(event, now) is True
+
+
+# ##################################################################
+# test is urgent for active event
+# verifies event currently happening is marked urgent
+def test_is_urgent_active_event() -> None:
+    now = datetime(2024, 1, 15, 10, 30, 0)
+    event = CalendarEvent(
+        title="Active Event",
+        start_time=datetime(2024, 1, 15, 10, 0, 0),  # started 30 min ago
+        end_time=datetime(2024, 1, 15, 11, 0, 0),
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="a1",
+    )
+    assert is_urgent(event, now) is True
+
+
+# ##################################################################
+# test is urgent for future event
+# verifies event more than 5 minutes away is not urgent
+def test_is_urgent_future_event() -> None:
+    now = datetime(2024, 1, 15, 10, 0, 0)
+    event = CalendarEvent(
+        title="Future Event",
+        start_time=datetime(2024, 1, 15, 10, 10, 0),  # 10 minutes from now
+        end_time=datetime(2024, 1, 15, 11, 0, 0),
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="f1",
+    )
+    assert is_urgent(event, now) is False
+
+
+# ##################################################################
+# test is urgent for past event
+# verifies event that has ended is not urgent
+def test_is_urgent_past_event() -> None:
+    now = datetime(2024, 1, 15, 12, 0, 0)
+    event = CalendarEvent(
+        title="Past Event",
+        start_time=datetime(2024, 1, 15, 10, 0, 0),
+        end_time=datetime(2024, 1, 15, 11, 0, 0),  # ended an hour ago
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="pa1",
+    )
+    assert is_urgent(event, now) is False
+
+
+# ##################################################################
+# test is urgent at exactly 5 minutes
+# verifies event exactly 5 minutes away is urgent
+def test_is_urgent_exactly_five_minutes() -> None:
+    now = datetime(2024, 1, 15, 10, 0, 0)
+    event = CalendarEvent(
+        title="Five Min Event",
+        start_time=datetime(2024, 1, 15, 10, 5, 0),  # exactly 5 minutes
+        end_time=datetime(2024, 1, 15, 11, 0, 0),
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="fm1",
+    )
+    assert is_urgent(event, now) is True
+
+
+# ##################################################################
+# test is urgent at event start
+# verifies event at exact start time is urgent
+def test_is_urgent_at_start() -> None:
+    now = datetime(2024, 1, 15, 10, 0, 0)
+    event = CalendarEvent(
+        title="Starting Now",
+        start_time=datetime(2024, 1, 15, 10, 0, 0),  # exactly now
+        end_time=datetime(2024, 1, 15, 11, 0, 0),
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="sn1",
+    )
+    assert is_urgent(event, now) is True
+
+
+# ##################################################################
+# test is urgent at event end
+# verifies event at exact end time is still urgent
+def test_is_urgent_at_end() -> None:
+    now = datetime(2024, 1, 15, 11, 0, 0)
+    event = CalendarEvent(
+        title="Ending Now",
+        start_time=datetime(2024, 1, 15, 10, 0, 0),
+        end_time=datetime(2024, 1, 15, 11, 0, 0),  # ending now
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="en1",
+    )
+    assert is_urgent(event, now) is True
+
+
+# ##################################################################
+# test has ended for past event
+# verifies event that ended is detected as ended
+def test_has_ended_past_event() -> None:
+    now = datetime(2024, 1, 15, 12, 0, 0)
+    event = CalendarEvent(
+        title="Past Event",
+        start_time=datetime(2024, 1, 15, 10, 0, 0),
+        end_time=datetime(2024, 1, 15, 11, 0, 0),  # ended an hour ago
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="pe1",
+    )
+    assert has_ended(event, now) is True
+
+
+# ##################################################################
+# test has ended for active event
+# verifies event currently happening is not ended
+def test_has_ended_active_event() -> None:
+    now = datetime(2024, 1, 15, 10, 30, 0)
+    event = CalendarEvent(
+        title="Active Event",
+        start_time=datetime(2024, 1, 15, 10, 0, 0),
+        end_time=datetime(2024, 1, 15, 11, 0, 0),
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="ae1",
+    )
+    assert has_ended(event, now) is False
+
+
+# ##################################################################
+# test has ended for future event
+# verifies future event is not ended
+def test_has_ended_future_event() -> None:
+    now = datetime(2024, 1, 15, 9, 0, 0)
+    event = CalendarEvent(
+        title="Future Event",
+        start_time=datetime(2024, 1, 15, 10, 0, 0),
+        end_time=datetime(2024, 1, 15, 11, 0, 0),
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="fe1",
+    )
+    assert has_ended(event, now) is False
+
+
+# ##################################################################
+# test has ended at exact end time
+# verifies event at exact end time is not yet ended (boundary case)
+def test_has_ended_at_exact_end_time() -> None:
+    now = datetime(2024, 1, 15, 11, 0, 0)
+    event = CalendarEvent(
+        title="Ending Now",
+        start_time=datetime(2024, 1, 15, 10, 0, 0),
+        end_time=datetime(2024, 1, 15, 11, 0, 0),  # ending exactly now
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="een1",
+    )
+    # at exact end time, event has NOT ended (now > end_time is false)
+    assert has_ended(event, now) is False
+
+
+# ##################################################################
+# test has ended one second after end
+# verifies event just after end time is ended
+def test_has_ended_one_second_after() -> None:
+    now = datetime(2024, 1, 15, 11, 0, 1)
+    event = CalendarEvent(
+        title="Just Ended",
+        start_time=datetime(2024, 1, 15, 10, 0, 0),
+        end_time=datetime(2024, 1, 15, 11, 0, 0),
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="je1",
+    )
+    assert has_ended(event, now) is True
