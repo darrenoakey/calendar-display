@@ -6,8 +6,6 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 
-import math
-
 from PySide6.QtCore import Qt, QTimer, QRectF, QSettings
 from PySide6.QtGui import QPainter, QColor, QFont, QBrush, QLinearGradient, QFontMetrics, QIcon
 from PySide6.QtWidgets import (
@@ -204,9 +202,9 @@ class EventCard(QFrame):
         if self.flash_phase > 0:
             # phase goes 0 to 1, shift hue through full 360 degrees
             hue_shift = int(self.flash_phase * 360)
-            h, s, l, a = self.color.getHsl()
+            h, s, lightness, a = self.color.getHsl()
             new_hue = (h + hue_shift) % 360
-            base_color = QColor.fromHsl(new_hue, s, l, a)
+            base_color = QColor.fromHsl(new_hue, s, lightness, a)
         else:
             base_color = self.color
         gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
@@ -517,6 +515,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(600, 500)
         self.restore_geometry()
         self.setWindowOpacity(0.9)
+        # make window stay on top of other windows
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
         self.setStyleSheet(f"background-color: {COLORS['background'].name()};")
         central = QWidget()
         self.setCentralWidget(central)
@@ -633,7 +633,7 @@ def run_application(days: int = 2) -> int:
         info["CFBundleName"] = "Calendar Display"
     except ImportError:
         pass  # pyobjc not available
-    app = QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Calendar Display")
     app.setApplicationDisplayName("Calendar Display")
     app.setStyle("Fusion")

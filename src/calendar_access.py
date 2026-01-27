@@ -110,9 +110,21 @@ def get_events_in_range(store: EKEventStore, start: datetime, end: datetime) -> 
 # ##################################################################
 # get events for days
 # fetches events for a specific number of days starting from today at midnight
-def get_events_for_days(days: int = 2) -> list[CalendarEvent]:
-    store = get_event_store()
-    now = datetime.now()
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=days)
-    return get_events_in_range(store, start, end)
+# includes retry logic for startup scenarios where calendar may not be ready
+def get_events_for_days(days: int = 2, max_retries: int = 5, retry_delay: float = 2.0) -> list[CalendarEvent]:
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            store = get_event_store()
+            now = datetime.now()
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(days=days)
+            return get_events_in_range(store, start, end)
+        except (RuntimeError, PermissionError) as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                brief_pause(retry_delay * (attempt + 1))  # exponential backoff
+    # if all retries failed, return empty list rather than crashing
+    # this allows the app to start and retry on next refresh
+    print(f"Calendar access failed after {max_retries} attempts: {last_error}")
+    return []
