@@ -161,14 +161,10 @@ class EventCard(QFrame):
         shadow.setYOffset(4)
         shadow.setColor(QColor(0, 0, 0, 50))
         self.setGraphicsEffect(shadow)
-        # flash animation timer
-        self.flash_timer = QTimer(self)
-        self.flash_timer.timeout.connect(self.update_flash)
-        self.flash_timer.start(FLASH_INTERVAL_MS)
 
     # ##################################################################
     # update flash
-    # advances the flash animation phase if event is urgent
+    # advances the flash animation phase - called by parent window's shared timer
     def update_flash(self) -> None:
         if is_urgent(self.calendar_event):
             self.flash_phase += FLASH_INTERVAL_MS / FLASH_CYCLE_MS
@@ -537,6 +533,10 @@ class MainWindow(QMainWindow):
         self.countdown_timer = QTimer(self)
         self.countdown_timer.timeout.connect(self.update_countdown)
         self.countdown_timer.start(config.countdown_interval_ms)
+        # single shared flash timer for all event cards
+        self.flash_timer = QTimer(self)
+        self.flash_timer.timeout.connect(self.update_flash_animations)
+        self.flash_timer.start(FLASH_INTERVAL_MS)
         self.refresh_events()
 
     # ##################################################################
@@ -599,6 +599,18 @@ class MainWindow(QMainWindow):
     def update_countdown(self) -> None:
         next_event = self.get_next_event()
         self.next_event_column.set_next_event(next_event, self.get_combined_color_map())
+
+    # ##################################################################
+    # update flash animations
+    # updates flash state for all event cards using a single shared timer
+    def update_flash_animations(self) -> None:
+        for column in (self.today_column, self.tomorrow_column):
+            for i in range(column.cards_layout.count()):
+                item = column.cards_layout.itemAt(i)
+                if item and item.widget():
+                    card = item.widget()
+                    if isinstance(card, EventCard):
+                        card.update_flash()
 
     # ##################################################################
     # refresh events
