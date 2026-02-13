@@ -7,13 +7,15 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, QRectF, QSettings
-from PySide6.QtGui import QPainter, QColor, QFont, QBrush, QLinearGradient, QFontMetrics, QIcon
+from PySide6.QtGui import QPainter, QColor, QFont, QBrush, QLinearGradient, QFontMetrics, QIcon, QAction
 from PySide6.QtWidgets import (
     QWidget, QMainWindow, QApplication, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame, QGraphicsDropShadowEffect
+    QLabel, QFrame, QGraphicsDropShadowEffect, QMenu, QDialog, QPushButton
 )
 
 from calendar_access import CalendarEvent
+from meeting_link import MeetingLink, extract_meeting_link, notification_key
+from meeting_launcher import launch_meeting
 
 SETTINGS_ORG = "CalendarDisplay"
 SETTINGS_APP = "CalendarDisplay"
@@ -142,6 +144,10 @@ def has_ended(event: CalendarEvent, now: Optional[datetime] = None) -> bool:
 FLASH_INTERVAL_MS = 50  # update every 50ms for smooth animation
 FLASH_CYCLE_MS = 2000   # complete flash cycle every 2 seconds
 
+# meeting notification timing
+NOTIFY_MINUTES_BEFORE = 5
+MAX_NOTIFIED_KEYS = 200
+
 
 # ##################################################################
 # event card widget
@@ -152,6 +158,7 @@ class EventCard(QFrame):
         super().__init__(parent)
         self.calendar_event = calendar_event
         self.color = color
+        self.meeting_link = extract_meeting_link(calendar_event)
         self.flash_phase = 0.0  # 0.0 to 1.0 representing position in flash cycle
         self.setFixedHeight(160)
         self.setMinimumWidth(200)
@@ -176,6 +183,19 @@ class EventCard(QFrame):
             self.update()
 
     # ##################################################################
+    # context menu event
+    # shows right-click menu with join meeting option if meeting link exists
+    def contextMenuEvent(self, context_event) -> None:
+        if not self.meeting_link:
+            return
+        menu = QMenu(self)
+        label = "Join Zoom Meeting" if self.meeting_link.link_type == "zoom" else "Join Google Meet"
+        action = QAction(label, self)
+        action.triggered.connect(lambda: launch_meeting(self.meeting_link))
+        menu.addAction(action)
+        menu.exec(context_event.globalPos())
+
+    # ##################################################################
     # paint event
     # custom painting for the card content with material design aesthetics
     def paintEvent(self, paint_event) -> None:  # noqa: ARG002
@@ -187,6 +207,7 @@ class EventCard(QFrame):
         self.draw_time(painter, rect)
         self.draw_title(painter, rect)
         self.draw_duration(painter, rect)
+        self.draw_meeting_badge(painter, rect)
         painter.end()
 
     # ##################################################################
@@ -261,6 +282,23 @@ class EventCard(QFrame):
             QRectF(rect.left() + 20, rect.bottom() - 38, rect.width() - 40, 26),
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
             duration_str
+        )
+
+    # ##################################################################
+    # draw meeting badge
+    # renders a small meeting type indicator in the bottom left
+    def draw_meeting_badge(self, painter: QPainter, rect: QRectF) -> None:
+        if not self.meeting_link:
+            return
+        badge = "Z" if self.meeting_link.link_type == "zoom" else "M"
+        font = QFont("Helvetica Neue", 11)
+        font.setWeight(QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.setPen(COLORS["card_text_muted"])
+        painter.drawText(
+            QRectF(rect.left() + 20, rect.bottom() - 38, 20, 26),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
+            badge
         )
 
 
@@ -498,6 +536,82 @@ class DayColumn(QFrame):
 
 
 # ##################################################################
+# meeting notification dialog
+# shows a popup with event info, live countdown, and join button
+class MeetingNotificationDialog(QDialog):
+
+    def __init__(self, calendar_event: CalendarEvent, link: MeetingLink, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.calendar_event = calendar_event
+        self.link = link
+        self.setWindowTitle("Meeting Starting Soon")
+        self.setWindowFlags(
+            Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint
+        )
+        self.setFixedSize(360, 200)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+        self.title_label = QLabel(calendar_event.title)
+        self.title_label.setStyleSheet("font-size: 18px; font-weight: bold; font-family: 'Helvetica Neue';")
+        self.title_label.setWordWrap(True)
+        layout.addWidget(self.title_label)
+        time_str = calendar_event.start_time.strftime("%-I:%M %p").lower()
+        self.time_label = QLabel(f"Starts at {time_str}")
+        self.time_label.setStyleSheet("font-size: 14px; color: #666; font-family: 'Helvetica Neue';")
+        layout.addWidget(self.time_label)
+        self.countdown_label = QLabel()
+        self.countdown_label.setStyleSheet(
+            "font-size: 24px; font-weight: bold; color: #4285f4; font-family: 'Helvetica Neue';"
+        )
+        self.countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.countdown_label)
+        button_layout = QHBoxLayout()
+        join_label = "Join Zoom" if link.link_type == "zoom" else "Join Meet"
+        self.join_button = QPushButton(join_label)
+        self.join_button.setStyleSheet(
+            "QPushButton { background-color: #4285f4; color: white; border: none; border-radius: 6px;"
+            " padding: 8px 20px; font-size: 14px; font-weight: bold; }"
+            " QPushButton:hover { background-color: #3367d6; }"
+        )
+        self.join_button.clicked.connect(self.join_meeting)
+        button_layout.addWidget(self.join_button)
+        self.dismiss_button = QPushButton("Dismiss")
+        self.dismiss_button.setStyleSheet(
+            "QPushButton { background-color: #e0e0e0; color: #333; border: none; border-radius: 6px;"
+            " padding: 8px 20px; font-size: 14px; }"
+            " QPushButton:hover { background-color: #bdbdbd; }"
+        )
+        self.dismiss_button.clicked.connect(self.close)
+        button_layout.addWidget(self.dismiss_button)
+        layout.addLayout(button_layout)
+        self.countdown_timer = QTimer(self)
+        self.countdown_timer.timeout.connect(self.update_countdown_label)
+        self.countdown_timer.start(1000)
+        self.update_countdown_label()
+
+    # ##################################################################
+    # update countdown label
+    # refreshes the mm:ss countdown display
+    def update_countdown_label(self) -> None:
+        now = datetime.now()
+        seconds_until = int((self.calendar_event.start_time - now).total_seconds())
+        if seconds_until <= 0:
+            self.countdown_label.setText("Starting now!")
+        else:
+            mins = seconds_until // 60
+            secs = seconds_until % 60
+            self.countdown_label.setText(f"{mins}:{secs:02d}")
+
+    # ##################################################################
+    # join meeting
+    # launches the meeting and closes the dialog
+    def join_meeting(self) -> None:
+        launch_meeting(self.link)
+        self.close()
+
+
+# ##################################################################
 # main window
 # the main application window with next event and two day columns
 class MainWindow(QMainWindow):
@@ -507,6 +621,8 @@ class MainWindow(QMainWindow):
         self.config = config
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self.all_events: list[CalendarEvent] = []
+        self.notified_event_keys: set[str] = self.load_notified_keys()
+        self.active_notification: Optional[MeetingNotificationDialog] = None
         self.setWindowTitle("Calendar")
         self.setMinimumSize(600, 500)
         self.restore_geometry()
@@ -594,11 +710,60 @@ class MainWindow(QMainWindow):
         return combined
 
     # ##################################################################
+    # load notified keys
+    # restores previously notified event keys from QSettings
+    def load_notified_keys(self) -> set[str]:
+        keys = self.settings.value("notified_event_keys", [])
+        if isinstance(keys, list):
+            return set(str(k) for k in keys if k)
+        return set()
+
+    # ##################################################################
+    # save notified keys
+    # persists notified event keys to QSettings with size limit
+    def save_notified_keys(self) -> None:
+        keys = sorted(self.notified_event_keys)
+        if len(keys) > MAX_NOTIFIED_KEYS:
+            keys = keys[-MAX_NOTIFIED_KEYS:]
+            self.notified_event_keys = set(keys)
+        self.settings.setValue("notified_event_keys", keys)
+
+    # ##################################################################
+    # check meeting notifications
+    # checks for upcoming meetings that need notification popups
+    def check_meeting_notifications(self) -> None:
+        now = datetime.now()
+        for event in self.all_events:
+            link = extract_meeting_link(event)
+            if not link:
+                continue
+            minutes_until = (event.start_time - now).total_seconds() / 60
+            if not (0 <= minutes_until <= NOTIFY_MINUTES_BEFORE):
+                continue
+            key = notification_key(event)
+            if key in self.notified_event_keys:
+                continue
+            self.notified_event_keys.add(key)
+            self.save_notified_keys()
+            self.show_meeting_notification(event, link)
+
+    # ##################################################################
+    # show meeting notification
+    # displays a meeting notification dialog with live countdown
+    def show_meeting_notification(self, event: CalendarEvent, link: MeetingLink) -> None:
+        if self.active_notification:
+            self.active_notification.close()
+        dialog = MeetingNotificationDialog(event, link)
+        self.active_notification = dialog
+        dialog.show()
+
+    # ##################################################################
     # update countdown
-    # refreshes the countdown display every second
+    # refreshes the countdown display every second and checks for meeting notifications
     def update_countdown(self) -> None:
         next_event = self.get_next_event()
         self.next_event_column.set_next_event(next_event, self.get_combined_color_map())
+        self.check_meeting_notifications()
 
     # ##################################################################
     # update flash animations

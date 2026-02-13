@@ -5,8 +5,10 @@ from datetime import datetime, timedelta
 
 from horizontal_calendar import (
     DisplayConfig, DayColumn, EventCard, NextEventColumn, COLORS,
+    MeetingNotificationDialog,
     format_duration, format_countdown, wrap_text, is_urgent, has_ended
 )
+from meeting_link import MeetingLink, notification_key
 from calendar_access import CalendarEvent
 
 
@@ -451,3 +453,155 @@ def test_has_ended_one_second_after() -> None:
         event_id="je1",
     )
     assert has_ended(event, now) is True
+
+
+# ##################################################################
+# test event card detects zoom meeting link
+# verifies event card extracts zoom link from event url
+def test_event_card_zoom_link() -> None:
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QColor
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    event = CalendarEvent(
+        title="Zoom Standup",
+        start_time=datetime.now(),
+        end_time=datetime.now() + timedelta(hours=1),
+        notes=None,
+        url="https://zoom.us/j/1234567890",
+        location=None,
+        calendar_name="Work",
+        event_id="z1",
+    )
+    card = EventCard(event, QColor(66, 133, 244))
+    assert card.meeting_link is not None
+    assert card.meeting_link.link_type == "zoom"
+    assert card.meeting_link.meeting_id == "1234567890"
+
+
+# ##################################################################
+# test event card detects meet link
+# verifies event card extracts google meet link from event url
+def test_event_card_meet_link() -> None:
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QColor
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    event = CalendarEvent(
+        title="Google Meet Sync",
+        start_time=datetime.now(),
+        end_time=datetime.now() + timedelta(hours=1),
+        notes=None,
+        url="https://meet.google.com/abc-defg-hij",
+        location=None,
+        calendar_name="Work",
+        event_id="gm1",
+    )
+    card = EventCard(event, QColor(52, 168, 83))
+    assert card.meeting_link is not None
+    assert card.meeting_link.link_type == "meet"
+
+
+# ##################################################################
+# test event card no meeting link
+# verifies event card has None meeting_link when no link found
+def test_event_card_no_meeting_link() -> None:
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QColor
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    event = CalendarEvent(
+        title="Lunch",
+        start_time=datetime.now(),
+        end_time=datetime.now() + timedelta(hours=1),
+        notes=None,
+        url=None,
+        location=None,
+        calendar_name="Personal",
+        event_id="no1",
+    )
+    card = EventCard(event, QColor(142, 86, 232))
+    assert card.meeting_link is None
+
+
+# ##################################################################
+# test notification key consistency from horizontal calendar
+# verifies notification_key produces consistent results
+def test_notification_key_from_horizontal_calendar() -> None:
+    start = datetime(2024, 6, 15, 10, 0, 0)
+    event = CalendarEvent(
+        title="Weekly Standup",
+        start_time=start,
+        end_time=start + timedelta(hours=1),
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="weekly1",
+    )
+    key1 = notification_key(event)
+    key2 = notification_key(event)
+    assert key1 == key2
+    assert "weekly1" in key1
+
+
+# ##################################################################
+# test meeting notification dialog creation
+# verifies the dialog can be created with event and link
+def test_meeting_notification_dialog_creation() -> None:
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    event = CalendarEvent(
+        title="Team Standup",
+        start_time=datetime.now() + timedelta(minutes=3),
+        end_time=datetime.now() + timedelta(hours=1, minutes=3),
+        notes=None,
+        url="https://zoom.us/j/999888777",
+        location=None,
+        calendar_name="Work",
+        event_id="dlg1",
+    )
+    link = MeetingLink(
+        link_type="zoom",
+        meeting_id="999888777",
+        password=None,
+        original_url="https://zoom.us/j/999888777",
+        launch_url="zoommtg://zoom.us/join?action=join&confno=999888777",
+    )
+    dialog = MeetingNotificationDialog(event, link)
+    assert dialog.windowTitle() == "Meeting Starting Soon"
+    assert dialog.title_label.text() == "Team Standup"
+    assert ":" in dialog.countdown_label.text() or "now" in dialog.countdown_label.text().lower()
+    dialog.close()
+
+
+# ##################################################################
+# test meeting notification dialog countdown shows time
+# verifies countdown label displays minutes and seconds
+def test_meeting_notification_dialog_countdown() -> None:
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    event = CalendarEvent(
+        title="Important Call",
+        start_time=datetime.now() + timedelta(minutes=2, seconds=30),
+        end_time=datetime.now() + timedelta(hours=1),
+        notes=None, url=None, location=None,
+        calendar_name="Work",
+        event_id="dlg2",
+    )
+    link = MeetingLink(
+        link_type="meet",
+        meeting_id="abc-defg-hij",
+        password=None,
+        original_url="https://meet.google.com/abc-defg-hij",
+        launch_url="https://meet.google.com/abc-defg-hij",
+    )
+    dialog = MeetingNotificationDialog(event, link)
+    text = dialog.countdown_label.text()
+    assert "2:" in text  # should show ~2:30 or 2:29
+    dialog.close()
