@@ -9,6 +9,23 @@ Start the app using auto:
 
 Do NOT launch directly with `python -m src.horizontal_calendar`.
 
+### Calendar Sources
+
+The app supports multiple calendar sources through two mechanisms:
+
+1. **Agent-Link Integration** (preferred): Fetches events from all connected calendar sources
+   - Apple Calendar (native)
+   - Google Calendar (requires OAuth configuration in agent-link)
+   - Start agent-link first: `/auto start agent-link`
+   - Calendar-display will auto-retry if agent-link is not available
+
+2. **EventKit Fallback**: Direct Apple Calendar access via PyObjC EventKit
+   - Automatically used if agent-link is unavailable
+   - Requires Calendar permission in System Settings > Privacy & Security > Calendars
+   - Only shows Apple Calendar events (no Google Calendar)
+
+The app will automatically fall back to EventKit if agent-link is not running or fails to connect.
+
 ## Python Version
 
 This project requires Python 3.13 specifically because PySide6 is installed there. The `run` script uses `#!/usr/bin/env python3.13` - do not change this to generic `python3` as that resolves to 3.14 which lacks PySide6.

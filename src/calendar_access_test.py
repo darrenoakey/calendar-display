@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 # tests for calendar_access module
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from calendar_access import CalendarEvent, get_event_store, get_events_in_range, get_events_for_days
+from calendar_access import (
+    CalendarEvent,
+    get_event_store,
+    get_events_in_range,
+    get_events_for_days,
+    parse_rfc3339,
+)
 
 
 # ##################################################################
@@ -88,3 +94,39 @@ def test_events_sorted_by_start_time() -> None:
     if len(events) >= 2:
         for i in range(len(events) - 1):
             assert events[i].start_time <= events[i + 1].start_time
+
+
+# ##################################################################
+# test parse rfc3339
+# verifies RFC3339 timestamp parsing
+def test_parse_rfc3339() -> None:
+    # Test with Z timezone
+    dt = parse_rfc3339("2026-02-15T10:00:00Z")
+    assert dt.year == 2026
+    assert dt.month == 2
+    assert dt.day == 15
+    assert dt.hour == 10
+    assert dt.minute == 0
+    assert dt.second == 0
+    assert dt.tzinfo == timezone.utc
+
+    # Test with explicit timezone
+    dt2 = parse_rfc3339("2026-02-15T10:00:00+11:00")
+    assert dt2.year == 2026
+    assert dt2.month == 2
+    assert dt2.day == 15
+    assert dt2.hour == 10
+
+    # Test with negative timezone
+    dt3 = parse_rfc3339("2026-02-15T10:00:00-08:00")
+    assert dt3.year == 2026
+    assert dt3.hour == 10
+
+
+# ##################################################################
+# test parse rfc3339 empty string
+# verifies that empty strings are handled gracefully
+def test_parse_rfc3339_empty() -> None:
+    dt = parse_rfc3339("")
+    assert isinstance(dt, datetime)
+    # Should return current time (approximately)
