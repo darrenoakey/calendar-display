@@ -327,34 +327,24 @@ def get_events_from_eventkit(days: int = 2) -> list[CalendarEvent]:
 # ##################################################################
 # get events for days
 # fetches events for a specific number of days starting from today at midnight
-# tries agent-link first, falls back to EventKit if unavailable
+# uses agent-link only (no EventKit fallback)
 def get_events_for_days(days: int = 2, max_retries: int = 5, retry_delay: float = 2.0) -> list[CalendarEvent]:
-    """Fetches events from all available calendar sources."""
+    """Fetches events from agent-link calendar sources."""
+    if not AGENT_LINK_AVAILABLE:
+        raise RuntimeError("agent-link Python client not available - run: cd ~/src/agent-link/clients/python && pip3.13 install -e .")
+
     last_error = None
 
     for attempt in range(max_retries):
         try:
-            # Try agent-link first
-            if AGENT_LINK_AVAILABLE:
-                try:
-                    return get_events_from_agent_link(days)
-                except Exception as e:
-                    print(f"Agent-link unavailable (attempt {attempt + 1}): {e}")
-                    last_error = e
-                    # Fall through to EventKit fallback
-
-            # Fallback to EventKit if agent-link failed or unavailable
-            if EVENTKIT_AVAILABLE:
-                return get_events_from_eventkit(days)
-            else:
-                raise RuntimeError("No calendar backend available (agent-link and EventKit both unavailable)")
-
-        except (RuntimeError, PermissionError) as e:
+            return get_events_from_agent_link(days)
+        except Exception as e:
             last_error = e
+            print(f"Agent-link error (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
                 brief_pause(retry_delay * (attempt + 1))  # exponential backoff
 
     # If all retries failed, return empty list rather than crashing
     # This allows the app to start and retry on next refresh
-    print(f"Calendar access failed after {max_retries} attempts: {last_error}")
+    print(f"Agent-link failed after {max_retries} attempts: {last_error}")
     return []
