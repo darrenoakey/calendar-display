@@ -9,6 +9,7 @@ from calendar_access import (
     get_events_in_range,
     get_events_for_days,
     parse_rfc3339,
+    parse_event_from_sse,
 )
 
 
@@ -130,3 +131,107 @@ def test_parse_rfc3339_empty() -> None:
     dt = parse_rfc3339("")
     assert isinstance(dt, datetime)
     # Should return current time (approximately)
+
+
+# ##################################################################
+# test parse event from sse with agent-link normalized format
+# verifies parsing of agent-link CalendarEventPayload
+def test_parse_event_from_sse_apple_calendar() -> None:
+    payload = {
+        "event_id": "7892DA27-8451-4E40-BC22-9912FB5B4F21",
+        "calendar_id": "Work",
+        "source": "apple-calendar",
+        "summary": "Team Meeting",
+        "start": "2026-02-17T10:00:00+11:00",
+        "end": "2026-02-17T11:00:00+11:00",
+        "description": "Discuss quarterly goals",
+        "location": "Conference Room A",
+        "attendees": [],
+        "status": "confirmed",
+        "updated": "2026-02-17T09:00:00+11:00",
+    }
+    event = parse_event_from_sse(payload)
+    assert event is not None
+    assert event.event_id == "7892DA27-8451-4E40-BC22-9912FB5B4F21"
+    assert event.calendar_name == "Work"
+    assert event.title == "Team Meeting"
+    assert event.start_time.hour == 10
+    assert event.end_time.hour == 11
+    assert event.notes == "Discuss quarterly goals"
+    assert event.location == "Conference Room A"
+
+
+# ##################################################################
+# test parse event from sse with google calendar normalized format
+# verifies google calendar events parse the same way
+def test_parse_event_from_sse_google_calendar() -> None:
+    payload = {
+        "event_id": "_64q36dpo6cq48ba36t0kab9k6h232b9o6coj6ba68cokcdi66h0jgci48o",
+        "calendar_id": "darren.oakey@gmail.com",
+        "source": "google-calendar-darren.oakey@gmail.com",
+        "summary": "Daily Standup",
+        "start": "2026-02-17T09:00:00+11:00",
+        "end": "2026-02-17T09:30:00+11:00",
+        "description": "",
+        "location": "",
+        "attendees": ["alice@example.com", "bob@example.com"],
+        "status": "confirmed",
+        "updated": "2026-02-16T08:00:00Z",
+    }
+    event = parse_event_from_sse(payload)
+    assert event is not None
+    assert event.event_id == "_64q36dpo6cq48ba36t0kab9k6h232b9o6coj6ba68cokcdi66h0jgci48o"
+    assert event.calendar_name == "darren.oakey@gmail.com"
+    assert event.title == "Daily Standup"
+    assert event.start_time.hour == 9
+
+
+# ##################################################################
+# test parse event from sse missing start returns none
+# verifies events without start time are skipped
+def test_parse_event_from_sse_missing_start() -> None:
+    payload = {
+        "event_id": "abc123",
+        "calendar_id": "Work",
+        "summary": "Bad Event",
+        "end": "2026-02-17T11:00:00+11:00",
+    }
+    event = parse_event_from_sse(payload)
+    assert event is None
+
+
+# ##################################################################
+# test parse event from sse missing end returns none
+# verifies events without end time are skipped
+def test_parse_event_from_sse_missing_end() -> None:
+    payload = {
+        "event_id": "abc123",
+        "calendar_id": "Work",
+        "summary": "Bad Event",
+        "start": "2026-02-17T10:00:00+11:00",
+    }
+    event = parse_event_from_sse(payload)
+    assert event is None
+
+
+# ##################################################################
+# test parse event from sse empty description and location
+# verifies empty strings for optional fields become None
+def test_parse_event_from_sse_empty_optional_fields() -> None:
+    payload = {
+        "event_id": "abc123",
+        "calendar_id": "Personal",
+        "source": "apple-calendar",
+        "summary": "Lunch",
+        "start": "2026-02-17T12:00:00+11:00",
+        "end": "2026-02-17T13:00:00+11:00",
+        "description": "",
+        "location": "",
+        "attendees": [],
+        "status": "confirmed",
+        "updated": "2026-02-17T09:00:00+11:00",
+    }
+    event = parse_event_from_sse(payload)
+    assert event is not None
+    assert event.notes is None
+    assert event.location is None

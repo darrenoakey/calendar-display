@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, QRectF, QSettings
+from PySide6.QtCore import Qt, QTimer, QRectF, QSettings, QThread, Signal
 from PySide6.QtGui import QPainter, QColor, QFont, QBrush, QLinearGradient, QFontMetrics, QIcon, QAction
 from PySide6.QtWidgets import (
     QWidget, QMainWindow, QApplication, QVBoxLayout, QHBoxLayout,
@@ -20,6 +20,92 @@ from meeting_launcher import launch_meeting
 SETTINGS_ORG = "CalendarDisplay"
 SETTINGS_APP = "CalendarDisplay"
 ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "calendar-display-icon.png"
+
+
+# ##################################################################
+# event subscription worker
+# background thread for subscribing to calendar event updates via SSE
+# reconnects automatically if the connection drops (e.g. agent-link restart)
+class EventSSEWorker(QThread):
+    event_update = Signal(str, dict)  # emits (event_type, event_data) for each event
+    snapshot_complete = Signal()  # emits when initial snapshot is received
+    reconnecting = Signal()  # emits before reconnecting so UI can clear stale state
+
+    def __init__(self, days: int = 2):
+        super().__init__()
+        self.days = days
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        import requests
+        import json
+        import time
+        from datetime import datetime, timedelta
+
+        retry_delay = 5  # seconds between reconnect attempts
+
+        while not self._stop:
+            # Recalculate time range each attempt (day may have changed)
+            now = datetime.now()
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(days=self.days)
+
+            url = "https://localhost:8900/api/v1/events/subscribe"
+            params = {
+                "type": "calendar.event.*",
+                "snapshot": "true",
+                "time_min": start.isoformat() + "Z",
+                "time_max": end.isoformat() + "Z",
+            }
+
+            try:
+                response = requests.get(url, params=params, stream=True, verify=False, timeout=None)
+                response.raise_for_status()
+
+                snapshot_done = False
+                for line in response.iter_lines(decode_unicode=True):
+                    if self._stop:
+                        return
+
+                    if not line or line.startswith(":"):
+                        continue
+
+                    if line.startswith("data: "):
+                        data_json = line[6:]  # Remove "data: " prefix
+                        try:
+                            event_data = json.loads(data_json)
+                            event_type = event_data.get("type", "")
+                            payload = event_data.get("payload", {})
+
+                            self.event_update.emit(event_type, payload)
+
+                            # Emit snapshot_complete on first non-snapshot event
+                            if not snapshot_done and event_type != "calendar.event.snapshot":
+                                snapshot_done = True
+                                self.snapshot_complete.emit()
+                        except json.JSONDecodeError as e:
+                            print(f"Failed to parse SSE data: {e}")
+                            continue
+
+            except Exception as e:
+                if self._stop:
+                    return
+                print(f"SSE connection error: {e}, reconnecting in {retry_delay}s...")
+
+            if self._stop:
+                return
+
+            # Signal reconnection so UI can clear stale events before new snapshot arrives
+            self.reconnecting.emit()
+
+            # Wait before retrying, checking _stop every 100ms
+            for _ in range(retry_delay * 10):
+                if self._stop:
+                    return
+                time.sleep(0.1)
 
 
 @dataclass
@@ -620,9 +706,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config = config
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
-        self.all_events: list[CalendarEvent] = []
+        self.all_events: dict[str, CalendarEvent] = {}  # keyed by event_id
         self.notified_event_keys: set[str] = self.load_notified_keys()
         self.active_notification: Optional[MeetingNotificationDialog] = None
+        self.fetch_worker: Optional[EventSSEWorker] = None
         self.setWindowTitle("Calendar")
         self.setMinimumSize(600, 500)
         self.restore_geometry()
@@ -643,6 +730,7 @@ class MainWindow(QMainWindow):
         self.tomorrow_column = DayColumn("Tomorrow", tomorrow.strftime("%A, %B %-d"))
         main_layout.addWidget(self.today_column, 1)
         main_layout.addWidget(self.tomorrow_column, 1)
+        # Background polling timer
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_events)
         self.refresh_timer.start(config.refresh_interval_ms)
@@ -653,6 +741,8 @@ class MainWindow(QMainWindow):
         self.flash_timer = QTimer(self)
         self.flash_timer.timeout.connect(self.update_flash_animations)
         self.flash_timer.start(FLASH_INTERVAL_MS)
+
+        # Initial fetch
         self.refresh_events()
 
     # ##################################################################
@@ -697,7 +787,8 @@ class MainWindow(QMainWindow):
     # finds the next upcoming event from now
     def get_next_event(self) -> Optional[CalendarEvent]:
         now = datetime.now()
-        future_events = [e for e in self.all_events if e.start_time > now]
+        all_events_list = list(self.all_events.values())
+        future_events = [e for e in all_events_list if e.start_time > now]
         return future_events[0] if future_events else None
 
     # ##################################################################
@@ -733,7 +824,7 @@ class MainWindow(QMainWindow):
     # checks for upcoming meetings that need notification popups
     def check_meeting_notifications(self) -> None:
         now = datetime.now()
-        for event in self.all_events:
+        for event in self.all_events.values():
             link = extract_meeting_link(event)
             if not link:
                 continue
@@ -779,15 +870,59 @@ class MainWindow(QMainWindow):
 
     # ##################################################################
     # refresh events
-    # fetches events from the calendar and updates all columns
+    # subscribes to SSE stream for calendar events
     def refresh_events(self) -> None:
-        from calendar_access import get_events_for_days
-        self.all_events = get_events_for_days(2)
+        # Skip if already subscribed
+        if self.fetch_worker is not None and self.fetch_worker.isRunning():
+            return
+
+        # Start SSE subscription
+        self.fetch_worker = EventSSEWorker(self.config.days)
+        self.fetch_worker.event_update.connect(self.on_event_update)
+        self.fetch_worker.snapshot_complete.connect(self.on_snapshot_complete)
+        self.fetch_worker.reconnecting.connect(self.on_reconnecting)
+        self.fetch_worker.start()
+
+    # on event update
+    # called when an event is received from SSE stream
+    def on_event_update(self, event_type: str, event_data: dict) -> None:
+        from calendar_access import parse_event_from_sse
+
+        if event_type == "calendar.event.deleted":
+            event_id = event_data.get("event_id", "")
+            self.all_events.pop(event_id, None)
+            self.update_display()
+            return
+
+        # Parse and store the event (handles snapshot + created + updated)
+        event = parse_event_from_sse(event_data)
+        if event is None:
+            return
+
+        self.all_events[event.event_id] = event
+        self.update_display()
+
+    # on snapshot complete
+    # called when initial snapshot has been received
+    def on_snapshot_complete(self) -> None:
+        print(f"Snapshot complete: {len(self.all_events)} events loaded")
+        self.update_display()
+
+    # on reconnecting
+    # called when SSE connection dropped and worker is about to reconnect
+    def on_reconnecting(self) -> None:
+        self.all_events.clear()
+        self.update_display()
+
+    # update display
+    # updates the UI with current events
+    def update_display(self) -> None:
         now = datetime.now()
         today = now.date()
         tomorrow = today + timedelta(days=1)
         # filter out events that have already ended
-        active_events = [e for e in self.all_events if not has_ended(e, now)]
+        all_events_list = list(self.all_events.values())
+        active_events = [e for e in all_events_list if not has_ended(e, now)]
         today_events = [e for e in active_events if e.start_time.date() == today]
         tomorrow_events = [e for e in active_events if e.start_time.date() == tomorrow]
         self.today_column.set_events(today_events)
