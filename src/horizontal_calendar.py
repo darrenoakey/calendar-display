@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # vertical card-based calendar display with material design
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -45,6 +46,8 @@ class EventSSEWorker(QThread):
         import time
         from datetime import datetime, timedelta
 
+        import sys
+        sys.stdout.reconfigure(line_buffering=True)
         retry_delay = 5  # seconds between reconnect attempts
 
         while not self._stop:
@@ -396,7 +399,6 @@ class NextEventColumn(QFrame):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.next_event: Optional[CalendarEvent] = None
-        self.calendar_color_map: dict[str, QColor] = {}
         self.setObjectName("NextEventColumn")
         self.setFixedWidth(280)
         self.setStyleSheet("""
@@ -415,9 +417,8 @@ class NextEventColumn(QFrame):
     # ##################################################################
     # set next event
     # updates the displayed next event
-    def set_next_event(self, event: Optional[CalendarEvent], color_map: dict[str, QColor]) -> None:
+    def set_next_event(self, event: Optional[CalendarEvent]) -> None:
         self.next_event = event
-        self.calendar_color_map = color_map
         self.update()
 
     # ##################################################################
@@ -485,7 +486,8 @@ class NextEventColumn(QFrame):
     # draw event preview
     # renders a preview of the next event below the countdown
     def draw_event_preview(self, painter: QPainter, rect: QRectF) -> None:
-        color = self.calendar_color_map.get(self.next_event.calendar_name, COLORS["card_colors"][0])
+        idx = int(hashlib.md5(self.next_event.event_id.encode()).hexdigest(), 16) % len(COLORS["card_colors"])
+        color = COLORS["card_colors"][idx]
         preview_rect = QRectF(rect.left() + 20, rect.top() + 200, rect.width() - 40, 120)
         gradient = QLinearGradient(preview_rect.topLeft(), preview_rect.bottomRight())
         gradient.setColorAt(0, color.lighter(105))
@@ -548,7 +550,6 @@ class DayColumn(QFrame):
     def __init__(self, title: str, subtitle: str = "", parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.title = title
-        self.calendar_color_map: dict[str, QColor] = {}
         self.setObjectName("DayColumn")
         self.setStyleSheet("""
             #DayColumn {
@@ -599,26 +600,17 @@ class DayColumn(QFrame):
 
     # ##################################################################
     # set events
-    # populates the column with event cards
+    # populates the column with event cards, each with a unique color per event_id
     def set_events(self, events: list[CalendarEvent]) -> None:
         while self.cards_layout.count():
             item = self.cards_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self.update_color_map(events)
         for cal_event in events:
-            color = self.calendar_color_map.get(cal_event.calendar_name, COLORS["card_colors"][0])
+            idx = int(hashlib.md5(cal_event.event_id.encode()).hexdigest(), 16) % len(COLORS["card_colors"])
+            color = COLORS["card_colors"][idx]
             card = EventCard(cal_event, color, self)
             self.cards_layout.addWidget(card)
-
-    # ##################################################################
-    # update color map
-    # assigns consistent colors to each calendar
-    def update_color_map(self, events: list[CalendarEvent]) -> None:
-        calendars = sorted(set(e.calendar_name for e in events))
-        for i, cal in enumerate(calendars):
-            if cal not in self.calendar_color_map:
-                self.calendar_color_map[cal] = COLORS["card_colors"][i % len(COLORS["card_colors"])]
 
 
 # ##################################################################
@@ -792,15 +784,6 @@ class MainWindow(QMainWindow):
         return future_events[0] if future_events else None
 
     # ##################################################################
-    # get combined color map
-    # merges color maps from both day columns
-    def get_combined_color_map(self) -> dict[str, QColor]:
-        combined = {}
-        combined.update(self.today_column.calendar_color_map)
-        combined.update(self.tomorrow_column.calendar_color_map)
-        return combined
-
-    # ##################################################################
     # load notified keys
     # restores previously notified event keys from QSettings
     def load_notified_keys(self) -> set[str]:
@@ -853,7 +836,7 @@ class MainWindow(QMainWindow):
     # refreshes the countdown display every second and checks for meeting notifications
     def update_countdown(self) -> None:
         next_event = self.get_next_event()
-        self.next_event_column.set_next_event(next_event, self.get_combined_color_map())
+        self.next_event_column.set_next_event(next_event)
         self.check_meeting_notifications()
 
     # ##################################################################
@@ -905,7 +888,7 @@ class MainWindow(QMainWindow):
     # on snapshot complete
     # called when initial snapshot has been received
     def on_snapshot_complete(self) -> None:
-        print(f"Snapshot complete: {len(self.all_events)} events loaded")
+        print(f"Snapshot complete: {len(self.all_events)} events loaded", flush=True)
         self.update_display()
 
     # on reconnecting

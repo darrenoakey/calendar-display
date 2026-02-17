@@ -231,9 +231,10 @@ def test_day_column_set_events() -> None:
 
 
 # ##################################################################
-# test color map assignment
-# verifies calendars get assigned consistent colors
-def test_color_map_assignment() -> None:
+# test per-event color assignment
+# verifies each event gets a color based on its event_id (not calendar name)
+def test_per_event_color_assignment() -> None:
+    import hashlib
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance()
     if app is None:
@@ -253,13 +254,19 @@ def test_color_map_assignment() -> None:
             start_time=datetime.now() + timedelta(hours=2),
             end_time=datetime.now() + timedelta(hours=3),
             notes=None, url=None, location=None,
-            calendar_name="Personal",
+            calendar_name="Work",  # same calendar as above, should still get different color
             event_id="p1",
         ),
     ]
     column.set_events(events)
-    assert "Work" in column.calendar_color_map
-    assert "Personal" in column.calendar_color_map
+    assert column.cards_layout.count() == 2
+    # Verify each card has a color matching its event_id hash
+    card0 = column.cards_layout.itemAt(0).widget()
+    card1 = column.cards_layout.itemAt(1).widget()
+    idx0 = int(hashlib.md5(b"w1").hexdigest(), 16) % len(COLORS["card_colors"])
+    idx1 = int(hashlib.md5(b"p1").hexdigest(), 16) % len(COLORS["card_colors"])
+    assert card0.color == COLORS["card_colors"][idx0]
+    assert card1.color == COLORS["card_colors"][idx1]
 
 
 # ##################################################################

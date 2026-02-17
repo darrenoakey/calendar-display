@@ -33,6 +33,19 @@ The flash animation for urgent events uses a **single shared QTimer** in MainWin
 - Actual physical memory (RSS/footprint) is what matters - should be <100MB
 - Use `footprint <pid>` to check real memory usage, not `ps` VSZ column
 
+### Agent-Link SSE Integration
+
+Calendar events are fetched via SSE subscription to `GET /api/v1/events/subscribe`:
+- `?type=calendar.event.*&snapshot=true&time_min=...&time_max=...`
+- Snapshot events arrive first with type `"calendar.event.snapshot"`, then live events
+- All sources normalized to `CalendarEventPayload` format: `event_id`, `calendar_id`, `start`/`end` (RFC3339 strings), `summary`, `description`, `location`
+- **NOT** the raw Google/Apple format (no nested `{dateTime}` objects, no `id`/`calendar` fields)
+- `EventSSEWorker` auto-reconnects with 5s backoff; emits `reconnecting` signal so MainWindow clears stale events before new snapshot
+
+**Agent-link structured logs** go to `~/.agent-link/agent-link.log` (JSON NDJSON), NOT to the auto process manager stdout log. Always check this file for calendar watcher activity.
+
+**Timezone handling**: `parse_rfc3339()` returns tz-aware datetimes. `parse_event_from_sse()` converts to naive local time via `.astimezone().replace(tzinfo=None)` so events compare cleanly with `datetime.now()`.
+
 ### Meeting Notifications (integrated from calendar-notifications)
 - `meeting_link.py`: Extracts Zoom and Google Meet links from calendar events (url > location > notes field priority, Zoom before Meet)
 - `meeting_launcher.py`: Launches meetings via `zoommtg://` for Zoom or `open` for Meet (fire-and-forget subprocess)
