@@ -733,6 +733,12 @@ class MainWindow(QMainWindow):
         self.flash_timer = QTimer(self)
         self.flash_timer.timeout.connect(self.update_flash_animations)
         self.flash_timer.start(FLASH_INTERVAL_MS)
+        # one-shot timer: if display is still empty 45s after startup, force reconnect
+        # guards against connecting to agent-link before its initial poll completes
+        self.startup_check_timer = QTimer(self)
+        self.startup_check_timer.setSingleShot(True)
+        self.startup_check_timer.timeout.connect(self.check_startup_events)
+        self.startup_check_timer.start(45000)
 
         # Initial fetch
         self.refresh_events()
@@ -865,6 +871,18 @@ class MainWindow(QMainWindow):
         self.fetch_worker.snapshot_complete.connect(self.on_snapshot_complete)
         self.fetch_worker.reconnecting.connect(self.on_reconnecting)
         self.fetch_worker.start()
+
+    # check startup events
+    # fires 45s after startup - if all_events is empty, the SSE connected before
+    # agent-link's initial poll completed; force a reconnect to get a fresh snapshot
+    def check_startup_events(self) -> None:
+        if not self.all_events:
+            print("Startup check: no events received, forcing SSE reconnect", flush=True)
+            if self.fetch_worker is not None:
+                self.fetch_worker.stop()
+                self.fetch_worker.wait(2000)
+            self.fetch_worker = None
+            self.refresh_events()
 
     # on event update
     # called when an event is received from SSE stream

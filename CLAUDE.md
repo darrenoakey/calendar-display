@@ -25,6 +25,9 @@ This project requires Python 3.13 specifically because PySide6 is installed ther
 
 ## Architecture Notes
 
+### Event Card Colors
+Colors are assigned **per event** using MD5 hash of `event_id` mod palette size — not per calendar. This ensures multiple events from the same calendar get visually distinct colors. There is NO `calendar_color_map`; do not re-introduce one. Pattern: `int(hashlib.md5(event_id.encode()).hexdigest(), 16) % len(COLORS["card_colors"])`.
+
 ### Flash Animation
 The flash animation for urgent events uses a **single shared QTimer** in MainWindow that iterates through all EventCards. Do NOT create individual timers per card - this causes memory issues from timer accumulation during refresh cycles.
 
