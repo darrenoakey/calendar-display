@@ -47,6 +47,7 @@ class EventSSEWorker(QThread):
         from datetime import datetime, timedelta
 
         import sys
+        from datetime import timezone as _tz
         sys.stdout.reconfigure(line_buffering=True)
         retry_delay = 5  # seconds between reconnect attempts
 
@@ -55,13 +56,16 @@ class EventSSEWorker(QThread):
             now = datetime.now()
             start = now.replace(hour=0, minute=0, second=0, microsecond=0)
             end = start + timedelta(days=self.days)
+            # Convert local midnight to UTC for the API query
+            start_utc = start.astimezone(_tz.utc)
+            end_utc = end.astimezone(_tz.utc)
 
             url = "https://localhost:8900/api/v1/events/subscribe"
             params = {
                 "type": "calendar.event.*",
                 "snapshot": "true",
-                "time_min": start.isoformat() + "Z",
-                "time_max": end.isoformat() + "Z",
+                "time_min": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "time_max": end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
 
             try:
@@ -236,6 +240,49 @@ FLASH_CYCLE_MS = 2000   # complete flash cycle every 2 seconds
 # meeting notification timing
 NOTIFY_MINUTES_BEFORE = 5
 MAX_NOTIFIED_KEYS = 200
+
+
+# ##################################################################
+# all day strip widget
+# displays an all-day event as a thin horizontal banner with a left color bar
+class AllDayStrip(QFrame):
+
+    def __init__(self, calendar_event: CalendarEvent, color: QColor, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.calendar_event = calendar_event
+        self.color = color
+        self.setFixedHeight(42)
+        self.setMinimumWidth(200)
+
+    def paintEvent(self, paint_event) -> None:  # noqa: ARG002
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        rect = self.rect()
+
+        # Background: very light tint of the event color
+        bg = QColor(self.color)
+        bg.setAlpha(28)
+        painter.setBrush(QBrush(bg))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(rect.adjusted(0, 1, 0, -1), 6, 6)
+
+        # Left color bar (4px wide)
+        bar_rect = QRectF(rect.left(), rect.top() + 1, 4, rect.height() - 2)
+        painter.setBrush(QBrush(self.color))
+        painter.drawRoundedRect(bar_rect, 2, 2)
+
+        # Event title text
+        font = QFont("Helvetica Neue", 16)
+        font.setWeight(QFont.Weight.Medium)
+        painter.setFont(font)
+        painter.setPen(self.color.darker(140))
+        painter.drawText(
+            QRectF(rect.left() + 12, rect.top(), rect.width() - 16, rect.height()),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            self.calendar_event.title,
+        )
+        painter.end()
 
 
 # ##################################################################
@@ -577,36 +624,44 @@ class DayColumn(QFrame):
             }}
         """)
         layout.addWidget(header)
-        if subtitle:
-            subheader = QLabel(subtitle)
-            subheader.setStyleSheet(f"""
-                QLabel {{
-                    color: {COLORS["subheader_text"].name()};
-                    font-size: 13px;
-                    font-weight: 500;
-                    font-family: 'Helvetica Neue';
-                    padding-bottom: 8px;
-                }}
-            """)
-            layout.addWidget(subheader)
-        else:
-            spacer = QWidget()
-            spacer.setFixedHeight(8)
-            layout.addWidget(spacer)
+        self.subheader_label = QLabel(subtitle)
+        self.subheader_label.setStyleSheet(f"""
+            QLabel {{
+                color: {COLORS["subheader_text"].name()};
+                font-size: 13px;
+                font-weight: 500;
+                font-family: 'Helvetica Neue';
+                padding-bottom: 8px;
+            }}
+        """)
+        layout.addWidget(self.subheader_label)
         self.cards_layout = QVBoxLayout()
         self.cards_layout.setSpacing(14)
         layout.addLayout(self.cards_layout)
         layout.addStretch()
 
     # ##################################################################
+    # set subtitle
+    # updates the date subtitle below the column header
+    def set_subtitle(self, subtitle: str) -> None:
+        self.subheader_label.setText(subtitle)
+
+    # ##################################################################
     # set events
-    # populates the column with event cards, each with a unique color per event_id
+    # populates the column with all-day strips then event cards, each with a unique color per event_id
     def set_events(self, events: list[CalendarEvent]) -> None:
         while self.cards_layout.count():
             item = self.cards_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        for cal_event in events:
+        all_day = [e for e in events if e.is_all_day]
+        timed = [e for e in events if not e.is_all_day]
+        for cal_event in all_day:
+            idx = int(hashlib.md5(cal_event.event_id.encode()).hexdigest(), 16) % len(COLORS["card_colors"])
+            color = COLORS["card_colors"][idx]
+            strip = AllDayStrip(cal_event, color, self)
+            self.cards_layout.addWidget(strip)
+        for cal_event in timed:
             idx = int(hashlib.md5(cal_event.event_id.encode()).hexdigest(), 16) % len(COLORS["card_colors"])
             color = COLORS["card_colors"][idx]
             card = EventCard(cal_event, color, self)
@@ -702,6 +757,7 @@ class MainWindow(QMainWindow):
         self.notified_event_keys: set[str] = self.load_notified_keys()
         self.active_notification: Optional[MeetingNotificationDialog] = None
         self.fetch_worker: Optional[EventSSEWorker] = None
+        self._display_pending = False
         self.setWindowTitle("Calendar")
         self.setMinimumSize(600, 500)
         self.restore_geometry()
@@ -739,6 +795,12 @@ class MainWindow(QMainWindow):
         self.startup_check_timer.setSingleShot(True)
         self.startup_check_timer.timeout.connect(self.check_startup_events)
         self.startup_check_timer.start(45000)
+        # debounce timer: coalesces rapid-fire event updates into a single redraw
+        # prevents O(n²) widget creation during snapshot (n events × n cards each)
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.setInterval(100)
+        self._update_timer.timeout.connect(self._do_update_display)
 
         # Initial fetch
         self.refresh_events()
@@ -761,9 +823,17 @@ class MainWindow(QMainWindow):
 
     # ##################################################################
     # close event
-    # saves window geometry when closing
+    # saves window geometry when closing and stops all background activity
     def closeEvent(self, close_event) -> None:
         self.save_geometry_settings()
+        self.refresh_timer.stop()
+        self.countdown_timer.stop()
+        self.flash_timer.stop()
+        self.startup_check_timer.stop()
+        self._update_timer.stop()
+        if self.fetch_worker is not None:
+            self.fetch_worker.stop()
+            self.fetch_worker.wait(3000)
         close_event.accept()
 
     # ##################################################################
@@ -786,7 +856,7 @@ class MainWindow(QMainWindow):
     def get_next_event(self) -> Optional[CalendarEvent]:
         now = datetime.now()
         all_events_list = list(self.all_events.values())
-        future_events = [e for e in all_events_list if e.start_time > now]
+        future_events = [e for e in all_events_list if not e.is_all_day and e.start_time > now]
         return future_events[0] if future_events else None
 
     # ##################################################################
@@ -833,7 +903,8 @@ class MainWindow(QMainWindow):
     def show_meeting_notification(self, event: CalendarEvent, link: MeetingLink) -> None:
         if self.active_notification:
             self.active_notification.close()
-        dialog = MeetingNotificationDialog(event, link)
+            self.active_notification.deleteLater()
+        dialog = MeetingNotificationDialog(event, link, self)
         self.active_notification = dialog
         dialog.show()
 
@@ -916,11 +987,20 @@ class MainWindow(QMainWindow):
         self.update_display()
 
     # update display
-    # updates the UI with current events
+    # schedules a debounced display refresh - coalesces rapid-fire calls into one
+    # prevents O(n²) widget creation when many events arrive in quick succession
     def update_display(self) -> None:
+        self._update_timer.start()  # restart timer; fires 100ms after last call
+
+    # do update display
+    # performs the actual display update - called by the debounce timer
+    def _do_update_display(self) -> None:
         now = datetime.now()
         today = now.date()
         tomorrow = today + timedelta(days=1)
+        # keep column date subtitles current (app may have been running across midnight)
+        self.today_column.set_subtitle(now.strftime("%A, %B %-d"))
+        self.tomorrow_column.set_subtitle((now + timedelta(days=1)).strftime("%A, %B %-d"))
         # filter out events that have already ended
         all_events_list = list(self.all_events.values())
         active_events = [e for e in all_events_list if not has_ended(e, now)]

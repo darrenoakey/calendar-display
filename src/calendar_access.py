@@ -40,6 +40,7 @@ class CalendarEvent:
     location: Optional[str]
     calendar_name: str
     event_id: str
+    is_all_day: bool = False
 
 
 # ##################################################################
@@ -436,6 +437,9 @@ def parse_event_from_sse(event_data: dict) -> Optional[CalendarEvent]:
         if not start_str or not end_str:
             return None
 
+        # All-day events have date-only strings (no "T" time component)
+        is_all_day = "T" not in start_str
+
         start_time = parse_rfc3339(start_str)
         end_time = parse_rfc3339(end_str)
 
@@ -460,6 +464,7 @@ def parse_event_from_sse(event_data: dict) -> Optional[CalendarEvent]:
             location=location,
             calendar_name=event_data.get("calendar_id", "Calendar"),
             event_id=event_data.get("event_id", ""),
+            is_all_day=is_all_day,
         )
     except Exception as e:
         print(f"Error parsing event from SSE: {e}: {event_data}")
