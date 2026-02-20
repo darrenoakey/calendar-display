@@ -57,3 +57,13 @@ Calendar events are fetched via SSE subscription to `GET /api/v1/events/subscrib
 - Notification state tracked via QSettings key `notified_event_keys` (set of `event_id@timestamp` strings, capped at 200)
 - Notification check runs in the existing 1-second `update_countdown()` timer — no additional timers needed
 - The dialog has its own QTimer for the countdown label, acceptable since at most 0-1 dialogs exist at a time
+
+### All-Day Events
+- Detected in `parse_event_from_sse()` by `"T" not in start_str` (date-only strings like `"2026-02-21"` vs timed `"2026-02-21T08:30:00+11:00"`)
+- Stored in `CalendarEvent.is_all_day = True`
+- Displayed as `AllDayStrip` widgets (42px tall, light color-tinted bg, 4px left color bar, event name 16pt) — rendered above timed event cards in each `DayColumn`
+- Excluded from Next Event countdown (`get_next_event` filters `not e.is_all_day`)
+- Do NOT filter them out in `_do_update_display` — they still have `start_time`/`end_time` at midnight boundaries which `has_ended()` handles correctly
+
+### Post-Reboot SSE Race Condition
+After a reboot, agent-link can take 3+ minutes to get its first events (Apple Calendar `osascript` gets killed repeatedly; Google Calendar needs OAuth token refresh). The 45s startup check in `check_startup_events` fires and reconnects, but the NEW connection also gets an empty snapshot since agent-link still hasn't polled. Live `calendar.event.created` events published later don't appear to reach the waiting SSE subscriber. **Fix: `auto restart calendar-display`** once agent-link logs show events published (`~/.agent-link/agent-link.log`).
