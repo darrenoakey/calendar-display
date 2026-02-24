@@ -654,8 +654,8 @@ class DayColumn(QFrame):
             item = self.cards_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        all_day = [e for e in events if e.is_all_day]
-        timed = [e for e in events if not e.is_all_day]
+        all_day = sorted([e for e in events if e.is_all_day], key=lambda e: e.start_time)
+        timed = sorted([e for e in events if not e.is_all_day], key=lambda e: e.start_time)
         for cal_event in all_day:
             idx = int(hashlib.md5(cal_event.event_id.encode()).hexdigest(), 16) % len(COLORS["card_colors"])
             color = COLORS["card_colors"][idx]
@@ -856,7 +856,10 @@ class MainWindow(QMainWindow):
     def get_next_event(self) -> Optional[CalendarEvent]:
         now = datetime.now()
         all_events_list = list(self.all_events.values())
-        future_events = [e for e in all_events_list if not e.is_all_day and e.start_time > now]
+        future_events = sorted(
+            [e for e in all_events_list if not e.is_all_day and e.start_time > now],
+            key=lambda e: e.start_time
+        )
         return future_events[0] if future_events else None
 
     # ##################################################################
