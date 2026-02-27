@@ -44,6 +44,7 @@ Calendar events are fetched via SSE subscription to `GET /api/v1/events/subscrib
 - All sources normalized to `CalendarEventPayload` format: `event_id`, `calendar_id`, `start`/`end` (RFC3339 strings), `summary`, `description`, `location`
 - **NOT** the raw Google/Apple format (no nested `{dateTime}` objects, no `id`/`calendar` fields)
 - `EventSSEWorker` auto-reconnects with 5s backoff; emits `reconnecting` signal so MainWindow clears stale events before new snapshot
+- **Midnight reconnect**: SSE worker tracks `connection_date` and breaks the connection when the day changes, forcing a reconnect with fresh `time_min`/`time_max`. Without this, the display shows stale events from the day the connection was established.
 
 **Agent-link structured logs** go to `~/.agent-link/agent-link.log` (JSON NDJSON), NOT to the auto process manager stdout log. Always check this file for calendar watcher activity.
 
