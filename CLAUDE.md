@@ -66,4 +66,7 @@ Calendar events are fetched via SSE subscription to `GET /api/v1/events/subscrib
 - Do NOT filter them out in `_do_update_display` — they still have `start_time`/`end_time` at midnight boundaries which `has_ended()` handles correctly
 
 ### Post-Reboot SSE Race Condition
-After a reboot, agent-link can take 3+ minutes to get its first events (Apple Calendar `osascript` gets killed repeatedly; Google Calendar needs OAuth token refresh). The 45s startup check in `check_startup_events` fires and reconnects, but the NEW connection also gets an empty snapshot since agent-link still hasn't polled. Live `calendar.event.created` events published later don't appear to reach the waiting SSE subscriber. **Fix: `auto restart calendar-display`** once agent-link logs show events published (`~/.agent-link/agent-link.log`).
+After a reboot, agent-link needs time to complete its initial poll. With EventKit (replacing osascript Feb 2026), the initial poll completes in ~10s. The 45s startup check in `check_startup_events` is usually sufficient now. If the display is still empty, `auto restart calendar-display` once agent-link logs show events published (`~/.agent-link/agent-link.log`).
+
+### Agent-Link Binary Deployment
+`auto show agent-link` reveals the binary path auto uses (e.g. `src/agent-link`). After `./run build` in agent-link, the binary goes to `output/bin/agent-link`. You must **copy both `agent-link` and `eventkit-helper`** to the path auto expects, then `auto restart agent-link`.

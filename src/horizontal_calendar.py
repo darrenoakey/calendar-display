@@ -72,10 +72,17 @@ class EventSSEWorker(QThread):
                 response = requests.get(url, params=params, stream=True, verify=False, timeout=None)
                 response.raise_for_status()
 
+                connection_date = now.date()
                 snapshot_done = False
                 for line in response.iter_lines(decode_unicode=True):
                     if self._stop:
                         return
+
+                    # Reconnect after midnight to refresh the time range
+                    if datetime.now().date() != connection_date:
+                        print("Day changed, reconnecting SSE for new time range...")
+                        response.close()
+                        break
 
                     if not line or line.startswith(":"):
                         continue
@@ -254,7 +261,7 @@ class AllDayStrip(QFrame):
         self.setFixedHeight(42)
         self.setMinimumWidth(200)
 
-    def paintEvent(self, paint_event) -> None:  # noqa: ARG002
+    def paintEvent(self, _paint_event) -> None:  # noqa: ARG002
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
@@ -327,18 +334,19 @@ class EventCard(QFrame):
         menu = QMenu(self)
         label = "Join Zoom Meeting" if self.meeting_link.link_type == "zoom" else "Join Google Meet"
         action = QAction(label, self)
-        action.triggered.connect(lambda: launch_meeting(self.meeting_link))
+        link = self.meeting_link  # capture for lambda; already guarded by None check above
+        action.triggered.connect(lambda: launch_meeting(link))
         menu.addAction(action)
         menu.exec(context_event.globalPos())
 
     # ##################################################################
     # paint event
     # custom painting for the card content with material design aesthetics
-    def paintEvent(self, paint_event) -> None:  # noqa: ARG002
+    def paintEvent(self, _paint_event) -> None:  # noqa: ARG002
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        rect = self.rect()
+        rect = QRectF(self.rect())
         self.draw_card_background(painter, rect)
         self.draw_time(painter, rect)
         self.draw_title(painter, rect)
@@ -355,9 +363,12 @@ class EventCard(QFrame):
         if self.flash_phase > 0:
             # phase goes 0 to 1, shift hue through full 360 degrees
             hue_shift = int(self.flash_phase * 360)
-            h, s, lightness, a = self.color.getHsl()
+            h = self.color.hslHue()
+            s = self.color.hslSaturation()
+            l = self.color.lightness()
+            a = self.color.alpha()
             new_hue = (h + hue_shift) % 360
-            base_color = QColor.fromHsl(new_hue, s, lightness, a)
+            base_color = QColor.fromHsl(new_hue, s, l, a)
         else:
             base_color = self.color
         gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
@@ -471,11 +482,11 @@ class NextEventColumn(QFrame):
     # ##################################################################
     # paint event
     # custom painting for the countdown display
-    def paintEvent(self, paint_event) -> None:  # noqa: ARG002
+    def paintEvent(self, _paint_event) -> None:  # noqa: ARG002
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        rect = self.rect()
+        rect = QRectF(self.rect())
         painter.fillRect(rect, COLORS["column_bg"])
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(COLORS["column_bg"])
@@ -506,6 +517,7 @@ class NextEventColumn(QFrame):
     # draw countdown
     # renders the big countdown timer
     def draw_countdown(self, painter: QPainter, rect: QRectF) -> None:
+        assert self.next_event is not None
         now = datetime.now()
         seconds_until = int((self.next_event.start_time - now).total_seconds())
         number, label = format_countdown(seconds_until)
@@ -533,6 +545,7 @@ class NextEventColumn(QFrame):
     # draw event preview
     # renders a preview of the next event below the countdown
     def draw_event_preview(self, painter: QPainter, rect: QRectF) -> None:
+        assert self.next_event is not None
         idx = int(hashlib.md5(self.next_event.event_id.encode()).hexdigest(), 16) % len(COLORS["card_colors"])
         color = COLORS["card_colors"][idx]
         preview_rect = QRectF(rect.left() + 20, rect.top() + 200, rect.width() - 40, 120)
@@ -652,8 +665,9 @@ class DayColumn(QFrame):
     def set_events(self, events: list[CalendarEvent]) -> None:
         while self.cards_layout.count():
             item = self.cards_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            w = item.widget() if item is not None else None
+            if w is not None:
+                w.deleteLater()
         all_day = sorted([e for e in events if e.is_all_day], key=lambda e: e.start_time)
         timed = sorted([e for e in events if not e.is_all_day], key=lambda e: e.start_time)
         for cal_event in all_day:
@@ -1023,13 +1037,15 @@ def run_application(days: int = 2) -> int:
     setproctitle.setproctitle("calendar-display")
     # set macos dock/menu name via pyobjc
     try:
-        from Foundation import NSBundle
+        from Foundation import NSBundle  # type: ignore[import-untyped]
         bundle = NSBundle.mainBundle()
         info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
         info["CFBundleName"] = "Calendar Display"
     except ImportError:
         pass  # pyobjc not available
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = QApplication.instance()
+    if not isinstance(app, QApplication):
+        app = QApplication(sys.argv)
     app.setApplicationName("Calendar Display")
     app.setApplicationDisplayName("Calendar Display")
     app.setStyle("Fusion")
