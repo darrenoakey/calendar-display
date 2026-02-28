@@ -771,6 +771,7 @@ class MainWindow(QMainWindow):
         self.notified_event_keys: set[str] = self.load_notified_keys()
         self.active_notification: Optional[MeetingNotificationDialog] = None
         self.fetch_worker: Optional[EventSSEWorker] = None
+        self._display_date = datetime.now().date()  # tracks current display date for midnight detection
         self._display_pending = False
         self.setWindowTitle("Calendar")
         self.setMinimumSize(600, 500)
@@ -809,6 +810,11 @@ class MainWindow(QMainWindow):
         self.startup_check_timer.setSingleShot(True)
         self.startup_check_timer.timeout.connect(self.check_startup_events)
         self.startup_check_timer.start(45000)
+        # midnight timer: fires at 00:00:01 to force SSE reconnect for new day
+        self.midnight_timer = QTimer(self)
+        self.midnight_timer.setSingleShot(True)
+        self.midnight_timer.timeout.connect(self._on_midnight)
+        self._schedule_midnight_timer()
         # debounce timer: coalesces rapid-fire event updates into a single redraw
         # prevents O(n²) widget creation during snapshot (n events × n cards each)
         self._update_timer = QTimer(self)
@@ -844,6 +850,7 @@ class MainWindow(QMainWindow):
         self.countdown_timer.stop()
         self.flash_timer.stop()
         self.startup_check_timer.stop()
+        self.midnight_timer.stop()
         self._update_timer.stop()
         if self.fetch_worker is not None:
             self.fetch_worker.stop()
@@ -929,6 +936,12 @@ class MainWindow(QMainWindow):
     # update countdown
     # refreshes the countdown display every second and checks for meeting notifications
     def update_countdown(self) -> None:
+        # Check if the date has changed (belt-and-suspenders with midnight_timer)
+        today = datetime.now().date()
+        if today != self._display_date:
+            print(f"Date changed from {self._display_date} to {today}, forcing SSE reconnect", flush=True)
+            self._display_date = today
+            self._force_sse_reconnect()
         next_event = self.get_next_event()
         self.next_event_column.set_next_event(next_event)
         self.check_meeting_notifications()
@@ -944,6 +957,38 @@ class MainWindow(QMainWindow):
                     card = item.widget()
                     if isinstance(card, EventCard):
                         card.update_flash()
+
+    # ##################################################################
+    # schedule midnight timer
+    # calculates ms until 00:00:01 tomorrow and starts the one-shot timer
+    def _schedule_midnight_timer(self) -> None:
+        now = datetime.now()
+        tomorrow_midnight = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=1, microsecond=0
+        )
+        ms_until = int((tomorrow_midnight - now).total_seconds() * 1000)
+        self.midnight_timer.start(max(ms_until, 1000))  # at least 1s
+
+    # ##################################################################
+    # on midnight
+    # fired by the midnight timer — forces SSE reconnect for new day's events
+    def _on_midnight(self) -> None:
+        print("Midnight timer fired, forcing SSE reconnect for new day", flush=True)
+        self._display_date = datetime.now().date()
+        self._force_sse_reconnect()
+        self._schedule_midnight_timer()  # schedule for next midnight
+
+    # ##################################################################
+    # force SSE reconnect
+    # tears down the current SSE worker and starts a fresh one
+    def _force_sse_reconnect(self) -> None:
+        if self.fetch_worker is not None:
+            self.fetch_worker.stop()
+            self.fetch_worker.wait(2000)
+        self.fetch_worker = None
+        self.all_events.clear()
+        self.update_display()
+        self.refresh_events()
 
     # ##################################################################
     # refresh events
@@ -981,6 +1026,15 @@ class MainWindow(QMainWindow):
             event_id = event_data.get("event_id", "")
             self.all_events.pop(event_id, None)
             self.update_display()
+            return
+
+        # Skip cancelled events
+        if event_data.get("status") == "cancelled":
+            # Remove if we had it from a previous snapshot
+            event_id = event_data.get("event_id", "")
+            if event_id and event_id in self.all_events:
+                del self.all_events[event_id]
+                self.update_display()
             return
 
         # Parse and store the event (handles snapshot + created + updated)
@@ -1023,6 +1077,10 @@ class MainWindow(QMainWindow):
         active_events = [e for e in all_events_list if not has_ended(e, now)]
         today_events = [e for e in active_events if e.start_time.date() == today]
         tomorrow_events = [e for e in active_events if e.start_time.date() == tomorrow]
+        # Log on day transitions and first display after reconnect
+        if not hasattr(self, '_last_logged_date') or self._last_logged_date != today:
+            self._last_logged_date = today
+            print(f"Display date: {today} | {len(today_events)} today, {len(tomorrow_events)} tomorrow, {len(all_events_list)} total", flush=True)
         self.today_column.set_events(today_events)
         self.tomorrow_column.set_events(tomorrow_events)
         self.update_countdown()

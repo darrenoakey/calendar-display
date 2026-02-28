@@ -44,7 +44,11 @@ Calendar events are fetched via SSE subscription to `GET /api/v1/events/subscrib
 - All sources normalized to `CalendarEventPayload` format: `event_id`, `calendar_id`, `start`/`end` (RFC3339 strings), `summary`, `description`, `location`
 - **NOT** the raw Google/Apple format (no nested `{dateTime}` objects, no `id`/`calendar` fields)
 - `EventSSEWorker` auto-reconnects with 5s backoff; emits `reconnecting` signal so MainWindow clears stale events before new snapshot
-- **Midnight reconnect**: SSE worker tracks `connection_date` and breaks the connection when the day changes, forcing a reconnect with fresh `time_min`/`time_max`. Without this, the display shows stale events from the day the connection was established.
+- **Midnight reconnect** (three independent mechanisms — do NOT reduce to one):
+  1. `_display_date` check in `update_countdown()` (1-second timer): compares `datetime.now().date()` against stored date, forces SSE reconnect on change. This is the primary mechanism — runs on Qt main thread, independent of SSE events.
+  2. `midnight_timer` (one-shot QTimer): fires precisely at 00:00:01, forces SSE reconnect, reschedules for next midnight. Belt-and-suspenders with mechanism 1.
+  3. SSE worker `connection_date` check: runs inside `iter_lines()` loop, only fires when an SSE line arrives (unreliable at midnight when no events are published — this alone is NOT sufficient).
+- **Cancelled events**: `on_event_update` skips events with `status == "cancelled"` and removes them from `all_events` if previously stored.
 
 **Agent-link structured logs** go to `~/.agent-link/agent-link.log` (JSON NDJSON), NOT to the auto process manager stdout log. Always check this file for calendar watcher activity.
 
