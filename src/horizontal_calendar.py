@@ -293,6 +293,92 @@ class AllDayStrip(QFrame):
 
 
 # ##################################################################
+# compact event card widget
+# displays a single event as a slim inline row: colored bg + time + title
+# used when a day has too many events to fit full-height cards
+COMPACT_CARD_HEIGHT = 56
+COMPACT_THRESHOLD = 4  # use compact cards when timed events exceed this
+
+
+class CompactEventCard(QFrame):
+
+    def __init__(self, calendar_event: CalendarEvent, color: QColor, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.calendar_event = calendar_event
+        self.color = color
+        self.meeting_link = extract_meeting_link(calendar_event)
+        self.flash_phase = 0.0
+        self.setFixedHeight(COMPACT_CARD_HEIGHT)
+        self.setMinimumWidth(200)
+
+    def update_flash(self) -> None:
+        if is_urgent(self.calendar_event):
+            self.flash_phase += FLASH_INTERVAL_MS / FLASH_CYCLE_MS
+            if self.flash_phase >= 1.0:
+                self.flash_phase = 0.0
+            self.update()
+        elif self.flash_phase != 0.0:
+            self.flash_phase = 0.0
+            self.update()
+
+    def contextMenuEvent(self, context_event) -> None:
+        if not self.meeting_link:
+            return
+        menu = QMenu(self)
+        label = "Join Zoom Meeting" if self.meeting_link.link_type == "zoom" else "Join Google Meet"
+        action = QAction(label, self)
+        link = self.meeting_link
+        action.triggered.connect(lambda: launch_meeting(link))
+        menu.addAction(action)
+        menu.exec(context_event.globalPos())
+
+    def paintEvent(self, _paint_event) -> None:  # noqa: ARG002
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        rect = QRectF(self.rect())
+
+        # background with flash support
+        if self.flash_phase > 0:
+            hue_shift = int(self.flash_phase * 360)
+            h, s, l, a = self.color.hslHue(), self.color.hslSaturation(), self.color.lightness(), self.color.alpha()
+            base_color = QColor.fromHsl((h + hue_shift) % 360, s, l, a)
+        else:
+            base_color = self.color
+
+        painter.setBrush(QBrush(base_color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 8, 8)
+
+        # time label (bold, left side) — same 30pt as full EventCard
+        time_str = self.calendar_event.start_time.strftime("%-I:%M %p").lower()
+        time_font = QFont("Helvetica Neue", 30)
+        time_font.setWeight(QFont.Weight.Bold)
+        time_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -0.5)
+        painter.setFont(time_font)
+        painter.setPen(COLORS["card_text"])
+        fm = painter.fontMetrics()
+        time_width = fm.horizontalAdvance(time_str)
+        time_rect = QRectF(rect.left() + 16, rect.top(), time_width + 4, rect.height())
+        painter.drawText(time_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, time_str)
+
+        # title (right of time, elided if needed) — same 18pt as full EventCard
+        title_x = rect.left() + 16 + time_width + 16
+        title_font = QFont("Helvetica Neue", 18)
+        title_font.setWeight(QFont.Weight.Medium)
+        painter.setFont(title_font)
+        painter.setPen(COLORS["card_text"])
+        avail_width = rect.right() - title_x - 16
+        if avail_width > 0:
+            tfm = painter.fontMetrics()
+            elided = tfm.elidedText(self.calendar_event.title, Qt.TextElideMode.ElideRight, int(avail_width))
+            title_rect = QRectF(title_x, rect.top(), avail_width, rect.height())
+            painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided)
+
+        painter.end()
+
+
+# ##################################################################
 # event card widget
 # displays a single event as a material design card with elevation
 class EventCard(QFrame):
@@ -670,15 +756,21 @@ class DayColumn(QFrame):
                 w.deleteLater()
         all_day = sorted([e for e in events if e.is_all_day], key=lambda e: e.start_time)
         timed = sorted([e for e in events if not e.is_all_day], key=lambda e: e.start_time)
+        compact = len(timed) > COMPACT_THRESHOLD
+        if compact:
+            self.cards_layout.setSpacing(6)
+        else:
+            self.cards_layout.setSpacing(14)
         for cal_event in all_day:
             idx = int(hashlib.md5(cal_event.event_id.encode()).hexdigest(), 16) % len(COLORS["card_colors"])
             color = COLORS["card_colors"][idx]
             strip = AllDayStrip(cal_event, color, self)
             self.cards_layout.addWidget(strip)
+        card_cls = CompactEventCard if compact else EventCard
         for cal_event in timed:
             idx = int(hashlib.md5(cal_event.event_id.encode()).hexdigest(), 16) % len(COLORS["card_colors"])
             color = COLORS["card_colors"][idx]
-            card = EventCard(cal_event, color, self)
+            card = card_cls(cal_event, color, self)
             self.cards_layout.addWidget(card)
 
 
@@ -955,7 +1047,7 @@ class MainWindow(QMainWindow):
                 item = column.cards_layout.itemAt(i)
                 if item and item.widget():
                     card = item.widget()
-                    if isinstance(card, EventCard):
+                    if isinstance(card, (EventCard, CompactEventCard)):
                         card.update_flash()
 
     # ##################################################################
